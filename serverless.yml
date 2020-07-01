@@ -12,7 +12,6 @@
 # Happy Coding!
 
 service: justwatch
-# app and org for use with dashboard.serverless.com
 app: justwatch
 org: igvaquero18
 
@@ -57,11 +56,9 @@ package:
 
 functions:
   searchNew:
-    handler: bin/searchnew
+    handler: bin/newmovies
     events:
-      - http:
-          path: hello
-          method: get
+      - schedule: cron(0 10 * * ? *)
 #    The following are a few example events you can configure
 #    NOTE: Please make sure to change your handler code to work with those events
 #    Check the event documentation for details
