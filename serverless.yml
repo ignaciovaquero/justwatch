@@ -25,6 +25,10 @@ provider:
   runtime: go1.x
   stage: dev
   region: eu-west-3
+  environment:
+    JUSTWATCH_PROVIDERS: mvs
+    JUSTWATCH_CONTENT_TYPES: movie
+    JUSTWATCH_FROM_DAYS: "2"
 
 # you can add statements to the Lambda function's IAM Role here
 #  iamRoleStatements:
