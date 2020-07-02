@@ -1,11 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -22,7 +22,7 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 	}
 
 	response, err := client.SearchNew(&justwatch.SearchQuery{
-		Providers: providers,
+		Providers:    providers,
 		ContentTypes: []string{"movies"},
 	})
 
@@ -31,8 +31,19 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 	}
 
 	for _, day := range response.Days {
-		if day.Date
+		date, err := time.Parse("2006-01-02", day.Date)
+		if err != nil {
+			return err
+		}
+		if date.After(time.Now().Add(-24 * time.Hour)) {
+			for _, provider := range day.Providers {
+				for _, item := range provider.Items {
+					fmt.Println(item)
+				}
+			}
+		}
 	}
+	return nil
 }
 
 func main() {
