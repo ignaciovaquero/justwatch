@@ -28,6 +28,8 @@ provider:
   environment:
     JUSTWATCH_PROVIDERS: mvs
     JUSTWATCH_CONTENT_TYPES: movie
+    JUSTWATCH_VERBOSE: "false"
+    JUSTWATCH_TELEGRAM_TOKEN: ${ssm:NOTIFIER_BOT_TOKEN~true}
     JUSTWATCH_FROM_DAYS: "2"
 
 # you can add statements to the Lambda function's IAM Role here
