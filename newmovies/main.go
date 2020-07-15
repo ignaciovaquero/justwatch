@@ -191,6 +191,9 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 		}
 		if date.After(time.Now().Add(-24 * time.Duration(fromDays) * time.Hour)) {
 			for _, provider := range day.Providers {
+				providerName := "unknown"
+				providerData, _ := jwClient.GetProviderByID(provider.ProviderID)
+				providerName = providerData.ClearName
 				for _, item := range provider.Items {
 					content, err := filterContent(item.ObjectType, item.ID)
 					if err != nil {
@@ -201,7 +204,7 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 						continue
 					}
 					sugar.Debugw("Sending telegram notification", "content", content.Title, "chat", chatID)
-					body := fmt.Sprintf("Título: %s\nDescripción: %s\n", content.Title, content.ShortDescription)
+					body := fmt.Sprintf("Título: %s\nDescripción: %s\nDisponible en: %s\n", content.Title, content.ShortDescription, providerName)
 					if err := telegramClient.SendNotification("Nuevo contenido disponible", body, []int64{chatID}); err != nil {
 						sugar.Errorf("Error when sending Telegram notification: %s", err.Error())
 					}

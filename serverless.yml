@@ -26,7 +26,7 @@ provider:
   stage: dev
   region: eu-west-3
   environment:
-    JUSTWATCH_PROVIDERS: mvs
+    JUSTWATCH_PROVIDERS: mvs,nfx,prv,dnp,atp
     JUSTWATCH_CONTENT_TYPES: movie
     JUSTWATCH_VERBOSE: "false"
     JUSTWATCH_TELEGRAM_TOKEN: ${ssm:NOTIFIER_BOT_TOKEN~true}
