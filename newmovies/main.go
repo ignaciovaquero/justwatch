@@ -203,8 +203,26 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 					if content == nil {
 						continue
 					}
+					genres := []string{}
+					for genreID := range content.GenreIDs {
+						genre, err := jwClient.GetGenreByID(genreID)
+						if err != nil {
+							continue
+						}
+						genres = append(genres, genre.TechnicalName)
+					}
+					if len(genres) == 0 {
+						genres = []string{"N/A"}
+					}
 					sugar.Debugw("Sending telegram notification", "content", content.Title, "chat", chatID)
-					body := fmt.Sprintf("Título: %s\nDescripción: %s\nDisponible en: %s\n", content.Title, content.ShortDescription, providerName)
+					body := fmt.Sprintf(
+						"Título: %s\nDescripción: %s\nAño: %d\nGéneros: %s\nDisponible en: %s\n",
+						content.Title,
+						content.ShortDescription,
+						content.OriginalReleaseYear,
+						strings.Join(genres, ","),
+						providerName,
+					)
 					if err := telegramClient.SendNotification("Nuevo contenido disponible", body, []int64{chatID}); err != nil {
 						sugar.Errorf("Error when sending Telegram notification: %s", err.Error())
 					}

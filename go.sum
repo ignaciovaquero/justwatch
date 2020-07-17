@@ -11,6 +11,8 @@ github.com/go-telegram-bot-api/telegram-bot-api v4.6.4+incompatible h1:2cauKuaEL
 github.com/go-telegram-bot-api/telegram-bot-api v4.6.4+incompatible/go.mod h1:qf9acutJ8cwBUhm1bqgz6Bei9/C/c93FPDljKWwsOgM=
 github.com/google/renameio v0.1.0/go.mod h1:KWCgfxg9yswjAJkECMjeO8J8rahYeXnNhOm40UhjYkI=
 github.com/gorilla/mux v1.7.3/go.mod h1:1lud6UwP+6orDFRuTfBEV8e9/aOM/c4fVVCaMa2zaAs=
+github.com/igvaquero18/go-justwatch v0.0.0-20200717054247-1e36aabea4d1 h1:/WHoAxlVEO3sMZVxUJ+S0wks2Mk2/50JD7zGSJsed8I=
+github.com/igvaquero18/go-justwatch v0.0.0-20200717054247-1e36aabea4d1/go.mod h1:J/z8r4mPj87egLKOBhs03PoF+j6dJGcR5WH0OHq/kkg=
 github.com/igvaquero18/telegram-notifier v0.0.0-20200709053438-7033b25bd928 h1:a8G3MDJC/HeZZhhTeHYv0rRM0CpZhmHh03theHurHY0=
 github.com/igvaquero18/telegram-notifier v0.0.0-20200709053438-7033b25bd928/go.mod h1:cxwPKjsZqTefTRsvsUA1opD41KXCsvFmy0pTo/PYmmE=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
