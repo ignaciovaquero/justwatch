@@ -157,7 +157,7 @@ func filterContent(contentType string, id int) (*justwatch.Content, error) {
 	sugar.Debugw("Getting content", "type", contentType, "id", id)
 	content, err := jwClient.GetContentByTypeAndID(contentType, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error getting content for content ID %d: %w", id, err)
 	}
 	if content.OriginalReleaseYear < releaseYear {
 		return nil, nil
@@ -216,6 +216,10 @@ func getProviderNames(providers []*justwatch.SearchProvider) (map[int]string, er
 	return providerNames, nil
 }
 
+// func getItemsForProviders(providers *justwatch.SearchProvider) []*justwatch.Item {
+// 	return []*justwatch.Item{}
+// }
+
 // Handler is our lambda handler invoked by the `lambda.Start` function call
 func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 	sugar.Debugw("Executing search query", "providers", providers, "content types", contentTypes)
@@ -239,6 +243,40 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 				return fmt.Errorf("error getting provider names: %w", err)
 			}
 			for _, provider := range day.Providers {
+				contentCh := make(chan *justwatch.Content)
+				errCh := make(chan error)
+				wg := sync.WaitGroup{}
+				wg.Add(len(provider.Items))
+				for _, item := range provider.Items {
+					go func(i *justwatch.Item, c chan<- *justwatch.Content, e chan<- error) {
+						content, err := filterContent(i.ObjectType, i.ID)
+						if err != nil {
+							errCh <- err
+						} else {
+							contentCh <- content
+						}
+						wg.Done()
+					}(item, contentCh, errCh)
+				}
+				doneCh := make(chan struct{})
+				go func(d chan<- struct{}) {
+					wg.Wait()
+					close(d)
+				}(doneCh)
+				contents := []*justwatch.Content{}
+				done := false
+				for !done {
+					select {
+					case content := <-contentCh:
+						if content != nil {
+							contents = append(contents, content)
+						}
+					case err := <-errCh:
+						return err
+					case <-doneCh:
+						done = true
+					}
+				}
 				for _, item := range provider.Items {
 					content, err := filterContent(item.ObjectType, item.ID)
 					if err != nil {
