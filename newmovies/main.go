@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -172,6 +173,49 @@ func filterContent(contentType string, id int) (*justwatch.Content, error) {
 	return content, nil
 }
 
+func getProviderNames(providers []*justwatch.SearchProvider) (map[int]string, error) {
+	providerIDs := map[int]struct{}{}
+	wg := sync.WaitGroup{}
+	doneCh := make(chan struct{})
+	providerCh := make(chan *justwatch.Provider)
+	errCh := make(chan error)
+	for _, provider := range providers {
+		if _, ok := providerIDs[provider.ProviderID]; ok {
+			continue
+		}
+		wg.Add(1)
+		providerIDs[provider.ProviderID] = struct{}{}
+		go func(id int, p chan<- *justwatch.Provider, e chan<- error) {
+			providerData, err := jwClient.GetProviderByID(id)
+			if err != nil {
+				e <- fmt.Errorf("error getting provider with id %d: %w", id, err)
+			} else {
+				p <- providerData
+			}
+			wg.Done()
+		}(provider.ProviderID, providerCh, errCh)
+	}
+
+	go func(d chan<- struct{}) {
+		wg.Wait()
+		close(d)
+	}(doneCh)
+
+	providerNames := map[int]string{}
+	done := false
+	for !done {
+		select {
+		case provider := <-providerCh:
+			providerNames[provider.ID] = provider.ClearName
+		case err := <-errCh:
+			return map[int]string{}, err
+		case <-doneCh:
+			done = true
+		}
+	}
+	return providerNames, nil
+}
+
 // Handler is our lambda handler invoked by the `lambda.Start` function call
 func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 	sugar.Debugw("Executing search query", "providers", providers, "content types", contentTypes)
@@ -190,10 +234,11 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 			return err
 		}
 		if date.After(time.Now().Add(-24 * time.Duration(fromDays) * time.Hour)) {
+			providerNames, err := getProviderNames(day.Providers)
+			if err != nil {
+				return fmt.Errorf("error getting provider names: %w", err)
+			}
 			for _, provider := range day.Providers {
-				providerName := "unknown"
-				providerData, _ := jwClient.GetProviderByID(provider.ProviderID)
-				providerName = providerData.ClearName
 				for _, item := range provider.Items {
 					content, err := filterContent(item.ObjectType, item.ID)
 					if err != nil {
@@ -221,7 +266,7 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 						content.ShortDescription,
 						content.OriginalReleaseYear,
 						strings.Join(genres, ","),
-						providerName,
+						providerNames[provider.ProviderID],
 					)
 					if err := telegramClient.SendNotification("Nuevo contenido disponible", body, []int64{chatID}); err != nil {
 						sugar.Errorf("Error when sending Telegram notification: %s", err.Error())
