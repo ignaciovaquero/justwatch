@@ -64,7 +64,7 @@ func init() {
 	verbose, err = strconv.ParseBool(getOrElse(verboseEnv, "false"))
 
 	if err != nil {
-		log.Printf("Error when parsing '%s': %s is not a valid boolean value", verboseEnv, getOrElse(verboseEnv, "false"))
+		log.Printf("error when parsing '%s': %s is not a valid boolean value", verboseEnv, getOrElse(verboseEnv, "false"))
 		verbose = false
 	}
 
@@ -88,26 +88,26 @@ func init() {
 	zl, err = cfg.Build()
 
 	if err != nil {
-		log.Fatalf("Error when initializing logger: %s", err.Error())
+		log.Fatalf("error when initializing logger: %s", err.Error())
 	}
 
 	sugar = zl.Sugar()
-	sugar.Debug("Logger initialization successful")
+	sugar.Debug("logger initialization successful")
 
 	fromDays, err = strconv.Atoi(getOrElse(fromDaysEnv, "1"))
 	if err != nil {
-		sugar.Fatalf("Error when converting days to integer: %s", err.Error())
+		sugar.Fatalf("error when converting days to integer: %s", err.Error())
 	}
 
 	chatID, err = strconv.ParseInt(os.Getenv(chatIDEnv), 10, 64)
 	if err != nil {
-		sugar.Fatalf("Error when converting chat ID to integer: %s", err.Error())
+		sugar.Fatalf("error when converting chat ID to integer: %s", err.Error())
 	}
 
 	releaseYear, err = strconv.Atoi(getOrElse(releaseYearEnv, defaultReleaseYear))
 	if err != nil {
 		sugar.Warnw(
-			"Error when parsing release year. Fallback to default value",
+			"error when parsing release year. Fallback to default value",
 			"year",
 			os.Getenv(releaseYearEnv),
 			"default",
@@ -119,7 +119,7 @@ func init() {
 	minScore, err := strconv.ParseFloat(getOrElse(minIMDBScoreEnv, defaultIMDBScore), 32)
 	if err != nil {
 		sugar.Warnw(
-			"Error when parsing minimum IMDB score. Fallback to default value",
+			"error when parsing minimum IMDB score. Fallback to default value",
 			"score",
 			os.Getenv(minIMDBScoreEnv),
 			"default",
@@ -132,7 +132,7 @@ func init() {
 	minScore, err = strconv.ParseFloat(getOrElse(minTMDBScoreEnv, defaultTMDBScore), 32)
 	if err != nil {
 		sugar.Warnw(
-			"Error when parsing minimum TMDB score. Fallback to default value",
+			"error when parsing minimum TMDB score. Fallback to default value",
 			"score",
 			os.Getenv(minTMDBScoreEnv),
 			"default",
@@ -144,12 +144,12 @@ func init() {
 
 	jwClient, err = justwatch.NewClient(justwatch.SetLogger(sugar))
 	if err != nil {
-		sugar.Fatalf("Error when creating new JustWatch client: %s", err.Error())
+		sugar.Fatalf("error when creating new JustWatch client: %s", err.Error())
 	}
 
 	telegramClient, err = telegram.NewClient(telegramToken, sugar)
 	if err != nil {
-		sugar.Fatalf("Error when creating the Telegram client: %s", err.Error())
+		sugar.Fatalf("error when creating the Telegram client: %s", err.Error())
 	}
 }
 
@@ -180,6 +180,7 @@ func getProviderNames(providers []*justwatch.SearchProvider) (map[int]string, er
 	providerCh := make(chan *justwatch.Provider)
 	errCh := make(chan error)
 	for _, provider := range providers {
+		sugar.Debugw("getting name for provider with ID %d", provider.ProviderID)
 		if _, ok := providerIDs[provider.ProviderID]; ok {
 			continue
 		}
@@ -216,13 +217,59 @@ func getProviderNames(providers []*justwatch.SearchProvider) (map[int]string, er
 	return providerNames, nil
 }
 
-// func getItemsForProviders(providers *justwatch.SearchProvider) []*justwatch.Item {
-// 	return []*justwatch.Item{}
-// }
+func getContentForProviders(providers []*justwatch.SearchProvider) (map[int][]*justwatch.Content, error) {
+	contents := map[int][]*justwatch.Content{}
+	for _, provider := range providers {
+		contentCh := make(chan struct {
+			providerID int
+			content    *justwatch.Content
+		})
+		errCh := make(chan error)
+		wg := sync.WaitGroup{}
+		wg.Add(len(provider.Items))
+		for _, item := range provider.Items {
+			go func(i *justwatch.Item, providerID int, c chan<- struct {
+				providerID int
+				content    *justwatch.Content
+			}, e chan<- error) {
+				content, err := filterContent(i.ObjectType, i.ID)
+				if err != nil {
+					errCh <- err
+				} else {
+					contentCh <- struct {
+						providerID int
+						content    *justwatch.Content
+					}{providerID, content}
+				}
+				wg.Done()
+			}(item, provider.ProviderID, contentCh, errCh)
+		}
+
+		doneCh := make(chan struct{})
+		go func(d chan<- struct{}) {
+			wg.Wait()
+			close(d)
+		}(doneCh)
+
+		done := false
+
+		for !done {
+			select {
+			case content := <-contentCh:
+				contents[content.providerID] = append(contents[content.providerID], content.content)
+			case err := <-errCh:
+				return map[int][]*justwatch.Content{}, err
+			case <-doneCh:
+				done = true
+			}
+		}
+	}
+	return contents, nil
+}
 
 // Handler is our lambda handler invoked by the `lambda.Start` function call
 func Handler(ctx context.Context, event events.CloudWatchEvent) error {
-	sugar.Debugw("Executing search query", "providers", providers, "content types", contentTypes)
+	sugar.Debugw("executing search query", "providers", providers, "content types", contentTypes)
 	response, err := jwClient.SearchNew(&justwatch.SearchQuery{
 		Providers:    providers,
 		ContentTypes: contentTypes,
@@ -238,76 +285,27 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 			return err
 		}
 		if date.After(time.Now().Add(-24 * time.Duration(fromDays) * time.Hour)) {
+			sugar.Debug("getting provider names")
 			providerNames, err := getProviderNames(day.Providers)
 			if err != nil {
 				return fmt.Errorf("error getting provider names: %w", err)
 			}
-			for _, provider := range day.Providers {
-				contentCh := make(chan *justwatch.Content)
-				errCh := make(chan error)
-				wg := sync.WaitGroup{}
-				wg.Add(len(provider.Items))
-				for _, item := range provider.Items {
-					go func(i *justwatch.Item, c chan<- *justwatch.Content, e chan<- error) {
-						content, err := filterContent(i.ObjectType, i.ID)
-						if err != nil {
-							errCh <- err
-						} else {
-							contentCh <- content
-						}
-						wg.Done()
-					}(item, contentCh, errCh)
-				}
-				doneCh := make(chan struct{})
-				go func(d chan<- struct{}) {
-					wg.Wait()
-					close(d)
-				}(doneCh)
-				contents := []*justwatch.Content{}
-				done := false
-				for !done {
-					select {
-					case content := <-contentCh:
-						if content != nil {
-							contents = append(contents, content)
-						}
-					case err := <-errCh:
-						return err
-					case <-doneCh:
-						done = true
-					}
-				}
-				for _, item := range provider.Items {
-					content, err := filterContent(item.ObjectType, item.ID)
-					if err != nil {
-						sugar.Errorw("Error when getting content", "type", item.ObjectType, "id", item.ID, "msg", err.Error())
-						continue
-					}
-					if content == nil {
-						continue
-					}
-					genres := []string{}
-					for genreID := range content.GenreIDs {
-						genre, err := jwClient.GetGenreByID(genreID)
-						if err != nil {
-							continue
-						}
-						genres = append(genres, genre.TechnicalName)
-					}
-					if len(genres) == 0 {
-						genres = []string{"N/A"}
-					}
-					sugar.Debugw("Sending telegram notification", "content", content.Title, "chat", chatID)
-					body := fmt.Sprintf(
-						"Título: %s\nDescripción: %s\nAño: %d\nGéneros: %s\nDisponible en: %s\n",
+			providerContents, err := getContentForProviders(day.Providers)
+			if err != nil {
+				return fmt.Errorf("error getting content for providers: %w", err)
+			}
+			for id, contents := range providerContents {
+				for _, content := range contents {
+					sugar.Debugw("sending telegram notification", "content", content.Title, "chat", chatID)
+					// TODO: get genres
+					body := fmt.Sprintf("Título: %s\nDescripción: %s\nAño: %d\nDisponible en: %s\n",
 						content.Title,
 						content.ShortDescription,
 						content.OriginalReleaseYear,
-						strings.Join(genres, ","),
-						providerNames[provider.ProviderID],
+						providerNames[id],
 					)
 					if err := telegramClient.SendNotification("Nuevo contenido disponible", body, []int64{chatID}); err != nil {
-						sugar.Errorf("Error when sending Telegram notification: %s", err.Error())
+						sugar.Errorf("error when sending Telegram notification: %s", err.Error())
 					}
 				}
 			}
