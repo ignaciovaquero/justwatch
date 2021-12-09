@@ -173,11 +173,14 @@ func filterContent(contentType string, id int) (*justwatch.Content, error) {
 	return content, nil
 }
 
-func getProviderNames(providers []*justwatch.SearchProvider) (map[int]string, error) {
+func getNameAndContentsForProviders(providers []*justwatch.SearchProvider) (map[string][]*justwatch.Content, error) {
 	providerIDs := map[int]struct{}{}
 	wg := sync.WaitGroup{}
 	doneCh := make(chan struct{})
-	providerCh := make(chan *justwatch.Provider)
+	providerCh := make(chan struct {
+		providerName string
+		content      *justwatch.Content
+	})
 	errCh := make(chan error)
 	for _, provider := range providers {
 		sugar.Debugw("getting name for provider with ID %d", provider.ProviderID)
