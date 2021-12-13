@@ -174,15 +174,25 @@ func filterContent(contentType string, id int) (*justwatch.Content, error) {
 }
 
 func getNameAndContentsForProviders(providers []*justwatch.SearchProvider) (map[string][]*justwatch.Content, error) {
+	type providerName struct {
+		ID   int
+		name string
+	}
+
+	type providerContent struct {
+		ID      int
+		content *justwatch.Content
+	}
+
 	providerIDs := map[int]struct{}{}
 	wgNames := sync.WaitGroup{}
 	doneNamesCh := make(chan struct{})
-	providerCh := make(chan map[int]string)
+	providerCh := make(chan providerName)
 	errCh := make(chan error)
 
 	wgContents := sync.WaitGroup{}
-	contentCh := make(chan map[int]*justwatch.Content)
 	doneContentsCh := make(chan struct{})
+	contentCh := make(chan providerContent)
 
 	for _, provider := range providers {
 		sugar.Debugw("getting name for provider with ID %d", provider.ProviderID)
@@ -191,28 +201,28 @@ func getNameAndContentsForProviders(providers []*justwatch.SearchProvider) (map[
 		}
 		wgNames.Add(1)
 		providerIDs[provider.ProviderID] = struct{}{}
-		go func(id int, p chan<- map[int]string, e chan<- error) {
+		go func(id int, p chan<- providerName, e chan<- error) {
 			providerData, err := jwClient.GetProviderByID(id)
 			if err != nil {
 				e <- fmt.Errorf("error getting provider with id %d: %w", id, err)
 			} else {
-				p <- map[int]string{id: providerData.ClearName}
+				p <- providerName{id, providerData.ClearName}
 			}
 			wgNames.Done()
 		}(provider.ProviderID, providerCh, errCh)
 
 		wgContents.Add(len(provider.Items))
-
 		for _, item := range provider.Items {
-			go func(i *justwatch.Item, providerID int, c chan<- map[int]*justwatch.Content, e chan<- error) {
+			go func(i *justwatch.Item, providerID int, c chan<- providerContent, e chan<- error) {
 				content, err := filterContent(i.ObjectType, i.ID)
 				if err != nil {
-					errCh <- err
+					errCh <- fmt.Errorf("error getting content for provider with id %d: %w", providerID, err)
 				} else {
-					contentCh <- map[int]*justwatch.Content{providerID: content}
+					contentCh <- providerContent{providerID, content}
 				}
 				wgContents.Done()
 			}(item, provider.ProviderID, contentCh, errCh)
+		}
 	}
 
 	go func(d chan<- struct{}) {
@@ -225,74 +235,33 @@ func getNameAndContentsForProviders(providers []*justwatch.SearchProvider) (map[
 		close(d)
 	}(doneContentsCh)
 
-	providerContents := map[string][]*justwatch.Content{}
+	names := map[int]string{}
+	contents := map[int][]*justwatch.Content{}
 	doneNames := false
 	doneContents := false
 	for !doneNames || !doneContents {
 		select {
 		case provider := <-providerCh:
-			if _, ok := providerContents[provider.providerName]; !ok {
-				providerContents[provider.providerName] = []*justwatch.Content{provider.content}
+			names[provider.ID] = provider.name
+		case content := <-contentCh:
+			if _, ok := contents[content.ID]; !ok {
+				contents[content.ID] = []*justwatch.Content{content.content}
 			} else {
-				providerContents[provider.providerName] = append(providerContents[provider.providerName], provider.content)
+				contents[content.ID] = append(contents[content.ID], content.content)
 			}
 		case err := <-errCh:
 			return map[string][]*justwatch.Content{}, err
 		case <-doneNamesCh:
 			doneNames = true
+		case <-doneContentsCh:
+			doneContents = true
 		}
+	}
+	providerContents := map[string][]*justwatch.Content{}
+	for id, content := range contents {
+		providerContents[names[id]] = content
 	}
 	return providerContents, nil
-}
-
-func getContentForProviders(providers []*justwatch.SearchProvider) (map[int][]*justwatch.Content, error) {
-	contents := map[int][]*justwatch.Content{}
-	for _, provider := range providers {
-		contentCh := make(chan struct {
-			providerID int
-			content    *justwatch.Content
-		})
-		errCh := make(chan error)
-		wg := sync.WaitGroup{}
-		wg.Add(len(provider.Items))
-		for _, item := range provider.Items {
-			go func(i *justwatch.Item, providerID int, c chan<- struct {
-				providerID int
-				content    *justwatch.Content
-			}, e chan<- error) {
-				content, err := filterContent(i.ObjectType, i.ID)
-				if err != nil {
-					errCh <- err
-				} else {
-					contentCh <- struct {
-						providerID int
-						content    *justwatch.Content
-					}{providerID, content}
-				}
-				wg.Done()
-			}(item, provider.ProviderID, contentCh, errCh)
-		}
-
-		doneCh := make(chan struct{})
-		go func(d chan<- struct{}) {
-			wg.Wait()
-			close(d)
-		}(doneCh)
-
-		done := false
-
-		for !done {
-			select {
-			case content := <-contentCh:
-				contents[content.providerID] = append(contents[content.providerID], content.content)
-			case err := <-errCh:
-				return map[int][]*justwatch.Content{}, err
-			case <-doneCh:
-				done = true
-			}
-		}
-	}
-	return contents, nil
 }
 
 // Handler is our lambda handler invoked by the `lambda.Start` function call
@@ -313,16 +282,12 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 			return err
 		}
 		if date.After(time.Now().Add(-24 * time.Duration(fromDays) * time.Hour)) {
-			sugar.Debug("getting provider names")
-			providerNames, err := getProviderNames(day.Providers)
+			sugar.Debug("getting provider contents")
+			providerContents, err := getNameAndContentsForProviders(day.Providers)
 			if err != nil {
-				return fmt.Errorf("error getting provider names: %w", err)
+				return fmt.Errorf("error getting provider contents: %w", err)
 			}
-			providerContents, err := getContentForProviders(day.Providers)
-			if err != nil {
-				return fmt.Errorf("error getting content for providers: %w", err)
-			}
-			for id, contents := range providerContents {
+			for providerName, contents := range providerContents {
 				for _, content := range contents {
 					sugar.Debugw("sending telegram notification", "content", content.Title, "chat", chatID)
 					// TODO: get genres
@@ -330,7 +295,7 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 						content.Title,
 						content.ShortDescription,
 						content.OriginalReleaseYear,
-						providerNames[id],
+						providerName,
 					)
 					if err := telegramClient.SendNotification("Nuevo contenido disponible", body, []int64{chatID}); err != nil {
 						sugar.Errorf("error when sending Telegram notification: %s", err.Error())
