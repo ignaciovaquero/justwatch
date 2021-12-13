@@ -175,49 +175,74 @@ func filterContent(contentType string, id int) (*justwatch.Content, error) {
 
 func getNameAndContentsForProviders(providers []*justwatch.SearchProvider) (map[string][]*justwatch.Content, error) {
 	providerIDs := map[int]struct{}{}
-	wg := sync.WaitGroup{}
-	doneCh := make(chan struct{})
-	providerCh := make(chan struct {
-		providerName string
-		content      *justwatch.Content
-	})
+	wgNames := sync.WaitGroup{}
+	doneNamesCh := make(chan struct{})
+	providerCh := make(chan map[int]string)
 	errCh := make(chan error)
+
+	wgContents := sync.WaitGroup{}
+	contentCh := make(chan map[int]*justwatch.Content)
+	doneContentsCh := make(chan struct{})
+
 	for _, provider := range providers {
 		sugar.Debugw("getting name for provider with ID %d", provider.ProviderID)
 		if _, ok := providerIDs[provider.ProviderID]; ok {
 			continue
 		}
-		wg.Add(1)
+		wgNames.Add(1)
 		providerIDs[provider.ProviderID] = struct{}{}
-		go func(id int, p chan<- *justwatch.Provider, e chan<- error) {
+		go func(id int, p chan<- map[int]string, e chan<- error) {
 			providerData, err := jwClient.GetProviderByID(id)
 			if err != nil {
 				e <- fmt.Errorf("error getting provider with id %d: %w", id, err)
 			} else {
-				p <- providerData
+				p <- map[int]string{id: providerData.ClearName}
 			}
-			wg.Done()
+			wgNames.Done()
 		}(provider.ProviderID, providerCh, errCh)
+
+		wgContents.Add(len(provider.Items))
+
+		for _, item := range provider.Items {
+			go func(i *justwatch.Item, providerID int, c chan<- map[int]*justwatch.Content, e chan<- error) {
+				content, err := filterContent(i.ObjectType, i.ID)
+				if err != nil {
+					errCh <- err
+				} else {
+					contentCh <- map[int]*justwatch.Content{providerID: content}
+				}
+				wgContents.Done()
+			}(item, provider.ProviderID, contentCh, errCh)
 	}
 
 	go func(d chan<- struct{}) {
-		wg.Wait()
+		wgNames.Wait()
 		close(d)
-	}(doneCh)
+	}(doneNamesCh)
 
-	providerNames := map[int]string{}
-	done := false
-	for !done {
+	go func(d chan<- struct{}) {
+		wgContents.Wait()
+		close(d)
+	}(doneContentsCh)
+
+	providerContents := map[string][]*justwatch.Content{}
+	doneNames := false
+	doneContents := false
+	for !doneNames || !doneContents {
 		select {
 		case provider := <-providerCh:
-			providerNames[provider.ID] = provider.ClearName
+			if _, ok := providerContents[provider.providerName]; !ok {
+				providerContents[provider.providerName] = []*justwatch.Content{provider.content}
+			} else {
+				providerContents[provider.providerName] = append(providerContents[provider.providerName], provider.content)
+			}
 		case err := <-errCh:
-			return map[int]string{}, err
-		case <-doneCh:
-			done = true
+			return map[string][]*justwatch.Content{}, err
+		case <-doneNamesCh:
+			doneNames = true
 		}
 	}
-	return providerNames, nil
+	return providerContents, nil
 }
 
 func getContentForProviders(providers []*justwatch.SearchProvider) (map[int][]*justwatch.Content, error) {
