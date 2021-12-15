@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -63,7 +64,7 @@ func init() {
 	verbose, err = strconv.ParseBool(getOrElse(verboseEnv, "false"))
 
 	if err != nil {
-		log.Printf("Error when parsing '%s': %s is not a valid boolean value", verboseEnv, getOrElse(verboseEnv, "false"))
+		log.Printf("error when parsing '%s': %s is not a valid boolean value", verboseEnv, getOrElse(verboseEnv, "false"))
 		verbose = false
 	}
 
@@ -87,26 +88,26 @@ func init() {
 	zl, err = cfg.Build()
 
 	if err != nil {
-		log.Fatalf("Error when initializing logger: %s", err.Error())
+		log.Fatalf("error when initializing logger: %s", err.Error())
 	}
 
 	sugar = zl.Sugar()
-	sugar.Debug("Logger initialization successful")
+	sugar.Debug("logger initialization successful")
 
 	fromDays, err = strconv.Atoi(getOrElse(fromDaysEnv, "1"))
 	if err != nil {
-		sugar.Fatalf("Error when converting days to integer: %s", err.Error())
+		sugar.Fatalf("error when converting days to integer: %s", err.Error())
 	}
 
 	chatID, err = strconv.ParseInt(os.Getenv(chatIDEnv), 10, 64)
 	if err != nil {
-		sugar.Fatalf("Error when converting chat ID to integer: %s", err.Error())
+		sugar.Fatalf("error when converting chat ID to integer: %s", err.Error())
 	}
 
 	releaseYear, err = strconv.Atoi(getOrElse(releaseYearEnv, defaultReleaseYear))
 	if err != nil {
 		sugar.Warnw(
-			"Error when parsing release year. Fallback to default value",
+			"error when parsing release year. Fallback to default value",
 			"year",
 			os.Getenv(releaseYearEnv),
 			"default",
@@ -118,7 +119,7 @@ func init() {
 	minScore, err := strconv.ParseFloat(getOrElse(minIMDBScoreEnv, defaultIMDBScore), 32)
 	if err != nil {
 		sugar.Warnw(
-			"Error when parsing minimum IMDB score. Fallback to default value",
+			"error when parsing minimum IMDB score. Fallback to default value",
 			"score",
 			os.Getenv(minIMDBScoreEnv),
 			"default",
@@ -131,7 +132,7 @@ func init() {
 	minScore, err = strconv.ParseFloat(getOrElse(minTMDBScoreEnv, defaultTMDBScore), 32)
 	if err != nil {
 		sugar.Warnw(
-			"Error when parsing minimum TMDB score. Fallback to default value",
+			"error when parsing minimum TMDB score. Fallback to default value",
 			"score",
 			os.Getenv(minTMDBScoreEnv),
 			"default",
@@ -143,20 +144,20 @@ func init() {
 
 	jwClient, err = justwatch.NewClient(justwatch.SetLogger(sugar))
 	if err != nil {
-		sugar.Fatalf("Error when creating new JustWatch client: %s", err.Error())
+		sugar.Fatalf("error when creating new JustWatch client: %s", err.Error())
 	}
 
 	telegramClient, err = telegram.NewClient(telegramToken, sugar)
 	if err != nil {
-		sugar.Fatalf("Error when creating the Telegram client: %s", err.Error())
+		sugar.Fatalf("error when creating the Telegram client: %s", err.Error())
 	}
 }
 
 func filterContent(contentType string, id int) (*justwatch.Content, error) {
-	sugar.Debugw("Getting content", "type", contentType, "id", id)
+	sugar.Debugw("getting content", "type", contentType, "id", id)
 	content, err := jwClient.GetContentByTypeAndID(contentType, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error getting content for content ID %d: %w", id, err)
 	}
 	if content.OriginalReleaseYear < releaseYear {
 		return nil, nil
@@ -172,9 +173,100 @@ func filterContent(contentType string, id int) (*justwatch.Content, error) {
 	return content, nil
 }
 
+func getNameAndContentsForProviders(providers []*justwatch.SearchProvider) (map[string][]*justwatch.Content, error) {
+	type providerName struct {
+		ID   int
+		name string
+	}
+
+	type providerContent struct {
+		ID      int
+		content *justwatch.Content
+	}
+
+	providerIDs := map[int]struct{}{}
+	wgNames := sync.WaitGroup{}
+	doneNamesCh := make(chan struct{})
+	providerCh := make(chan providerName)
+	errCh := make(chan error)
+
+	wgContents := sync.WaitGroup{}
+	doneContentsCh := make(chan struct{})
+	contentCh := make(chan providerContent)
+
+	for _, provider := range providers {
+		sugar.Debugw("getting name for provider", "provider_id", provider.ProviderID)
+		if _, ok := providerIDs[provider.ProviderID]; ok {
+			continue
+		}
+		wgNames.Add(1)
+		providerIDs[provider.ProviderID] = struct{}{}
+		go func(id int, p chan<- providerName, e chan<- error) {
+			providerData, err := jwClient.GetProviderByID(id)
+			if err != nil {
+				e <- fmt.Errorf("error getting provider with id %d: %w", id, err)
+			} else {
+				p <- providerName{id, providerData.ClearName}
+			}
+			wgNames.Done()
+		}(provider.ProviderID, providerCh, errCh)
+
+		wgContents.Add(len(provider.Items))
+		for _, item := range provider.Items {
+			go func(i *justwatch.Item, providerID int, c chan<- providerContent, e chan<- error) {
+				content, err := filterContent(i.ObjectType, i.ID)
+				if err != nil {
+					errCh <- fmt.Errorf("error getting content for provider with id %d: %w", providerID, err)
+				} else {
+					contentCh <- providerContent{providerID, content}
+				}
+				wgContents.Done()
+			}(item, provider.ProviderID, contentCh, errCh)
+		}
+	}
+
+	go func(d chan<- struct{}) {
+		wgNames.Wait()
+		close(d)
+	}(doneNamesCh)
+
+	go func(d chan<- struct{}) {
+		wgContents.Wait()
+		close(d)
+	}(doneContentsCh)
+
+	names := map[int]string{}
+	contents := map[int][]*justwatch.Content{}
+	doneNames := false
+	doneContents := false
+	for !doneNames || !doneContents {
+		select {
+		case provider := <-providerCh:
+			names[provider.ID] = provider.name
+		case content := <-contentCh:
+			if _, ok := contents[content.ID]; !ok {
+				contents[content.ID] = []*justwatch.Content{content.content}
+			} else {
+				contents[content.ID] = append(contents[content.ID], content.content)
+			}
+		case err := <-errCh:
+			return map[string][]*justwatch.Content{}, err
+		case <-doneNamesCh:
+			doneNames = true
+		case <-doneContentsCh:
+			doneContents = true
+		}
+	}
+	providerContents := map[string][]*justwatch.Content{}
+	for id, content := range contents {
+		providerContents[names[id]] = content
+	}
+	return providerContents, nil
+}
+
 // Handler is our lambda handler invoked by the `lambda.Start` function call
 func Handler(ctx context.Context, event events.CloudWatchEvent) error {
-	sugar.Debugw("Executing search query", "providers", providers, "content types", contentTypes)
+	sugar.Debugw("executing search query", "providers", providers, "content types", contentTypes)
 	response, err := jwClient.SearchNew(&justwatch.SearchQuery{
 		Providers:    providers,
 		ContentTypes: contentTypes,
@@ -190,41 +282,23 @@ func Handler(ctx context.Context, event events.CloudWatchEvent) error {
 			return err
 		}
 		if date.After(time.Now().Add(-24 * time.Duration(fromDays) * time.Hour)) {
-			for _, provider := range day.Providers {
-				providerName := "unknown"
-				providerData, _ := jwClient.GetProviderByID(provider.ProviderID)
-				providerName = providerData.ClearName
-				for _, item := range provider.Items {
-					content, err := filterContent(item.ObjectType, item.ID)
-					if err != nil {
-						sugar.Errorw("Error when getting content", "type", item.ObjectType, "id", item.ID, "msg", err.Error())
-						continue
-					}
-					if content == nil {
-						continue
-					}
-					genres := []string{}
-					for genreID := range content.GenreIDs {
-						genre, err := jwClient.GetGenreByID(genreID)
-						if err != nil {
-							continue
-						}
-						genres = append(genres, genre.TechnicalName)
-					}
-					if len(genres) == 0 {
-						genres = []string{"N/A"}
-					}
-					sugar.Debugw("Sending telegram notification", "content", content.Title, "chat", chatID)
-					body := fmt.Sprintf(
-						"Título: %s\nDescripción: %s\nAño: %d\nGéneros: %s\nDisponible en: %s\n",
+			sugar.Debug("getting provider contents")
+			providerContents, err := getNameAndContentsForProviders(day.Providers)
+			if err != nil {
+				return fmt.Errorf("error getting provider contents: %w", err)
+			}
+			for providerName, contents := range providerContents {
+				for _, content := range contents {
+					sugar.Debugw("sending telegram notification", "content", content.Title, "chat", chatID)
+					// TODO: get genres
+					body := fmt.Sprintf("Título: %s\nDescripción: %s\nAño: %d\nDisponible en: %s\n",
 						content.Title,
 						content.ShortDescription,
 						content.OriginalReleaseYear,
-						strings.Join(genres, ","),
 						providerName,
 					)
 					if err := telegramClient.SendNotification("Nuevo contenido disponible", body, []int64{chatID}); err != nil {
-						sugar.Errorf("Error when sending Telegram notification: %s", err.Error())
+						sugar.Errorf("error when sending Telegram notification: %s", err.Error())
 					}
 				}
 			}
