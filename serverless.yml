@@ -3,12 +3,14 @@ app: justwatch
 org: igvaquero18
 
 frameworkVersion: '>=2.66.1 <3.0.0'
+variablesResolutionMode: 20210326
 
 provider:
   name: aws
   runtime: go1.x
   stage: dev
   region: eu-west-3
+  profile: serverless
   memorySize: 128
   timeout: 3
   logRetentionInDays: 7
@@ -16,7 +18,7 @@ provider:
     JUSTWATCH_PROVIDERS: mvs,nfx,prv,dnp,atp,hbm
     JUSTWATCH_CONTENT_TYPES: movie
     JUSTWATCH_VERBOSE: "true"
-    JUSTWATCH_TELEGRAM_TOKEN: ${ssm:NOTIFIER_BOT_TOKEN~true}
+    JUSTWATCH_TELEGRAM_TOKEN: ${ssm:NOTIFIER_BOT_TOKEN}
     JUSTWATCH_FROM_DAYS: "2"
     JUSTWATCH_CHAT_ID: "-1001483228315"
 
