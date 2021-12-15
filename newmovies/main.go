@@ -154,7 +154,7 @@ func init() {
 }
 
 func filterContent(contentType string, id int) (*justwatch.Content, error) {
-	sugar.Debugw("Getting content", "type", contentType, "id", id)
+	sugar.Debugw("getting content", "type", contentType, "id", id)
 	content, err := jwClient.GetContentByTypeAndID(contentType, id)
 	if err != nil {
 		return nil, fmt.Errorf("error getting content for content ID %d: %w", id, err)
@@ -195,7 +195,7 @@ func getNameAndContentsForProviders(providers []*justwatch.SearchProvider) (map[
 	contentCh := make(chan providerContent)
 
 	for _, provider := range providers {
-		sugar.Debugw("getting name for provider with ID %d", provider.ProviderID)
+		sugar.Debugw("getting name for provider", "provider_id", provider.ProviderID)
 		if _, ok := providerIDs[provider.ProviderID]; ok {
 			continue
 		}
